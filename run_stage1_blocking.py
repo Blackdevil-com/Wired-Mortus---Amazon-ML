@@ -70,6 +70,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-top-k", type=int, default=20, help="Top-K candidates per S1 entity for FAISS/embeddings (default: 20).")
     parser.add_argument("--embedding-model", default="paraphrase-multilingual-MiniLM-L12-v2", help="SentenceTransformer model name.")
     parser.add_argument("--embedding-batch-size", type=int, default=512, help="Batch size for embedding generation (default: 512).")
+    parser.add_argument("--max-candidates-per-key", type=int, default=100, help="Max candidates retrieved per query in coarse block channels (default: 100).")
+    parser.add_argument("--max-block-size", type=int, default=1000, help="Mega-block candidate count threshold (default: 1000).")
 
     # Channel toggles
     parser.add_argument("--skip-exact", action="store_true", help="Skip Exact Name blocking channel.")
@@ -184,6 +186,8 @@ def main() -> None:
         use_tfidf_block=not args.skip_tfidf,
         use_embedding_block=not args.skip_embeddings,
         country_aware=not args.no_country_aware,
+        max_candidates_per_key=args.max_candidates_per_key,
+        max_block_size=args.max_block_size,
         tfidf_top_k=args.tfidf_top_k,
         embedding_top_k=args.embedding_top_k,
         embedding_model=args.embedding_model,

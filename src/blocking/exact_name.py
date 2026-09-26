@@ -21,6 +21,8 @@ def exact_name_block(
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
+    max_candidates_per_key: int = 100,
+    max_block_size: int = 1000,
 ) -> pd.DataFrame:
     """
     Generate candidate pairs where S1 and candidate entity have the exact same
@@ -56,13 +58,23 @@ def exact_name_block(
     cand_res: list[str] = []
     country_res: list[str] = []
 
-    for i in range(len(s1_ids)):
+    total_s1 = len(s1_ids)
+    log_interval = max(500_000, total_s1 // 4)
+
+    for i in range(total_s1):
+        if (i + 1) % log_interval == 0:
+            logger.info("  [Exact Name S1 -> %s] Queried %d / %d S1 records (%d pairs found)...", cand_source, i + 1, total_s1, len(s1_res))
         name = s1_names[i].strip()
         if not name:
             continue
         country = s1_countries[i].strip() if country_aware else ""
         matched = cand_index.get((country, name))
         if matched:
+            if max_block_size > 0 and len(matched) > max_block_size:
+                matched = matched[:max_candidates_per_key]
+            elif max_candidates_per_key > 0 and len(matched) > max_candidates_per_key:
+                matched = matched[:max_candidates_per_key]
+
             for cid in matched:
                 s1_res.append(s1_ids[i])
                 cand_res.append(cid)

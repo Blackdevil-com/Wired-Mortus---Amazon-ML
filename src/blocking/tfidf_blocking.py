@@ -56,44 +56,58 @@ def _retrieve_top_k_sparse(
     cand_matrix = vectorizer.fit_transform(cand_texts)
 
     results: list[dict] = []
-    num_cands = len(cand_ids)
-    actual_k = min(top_k, num_cands)
-
     cand_ids_arr = np.array(cand_ids, dtype=object)
+    total_queries = len(s1_texts)
 
     # Process S1 queries in batches to bound RAM
-    for start_idx in range(0, len(s1_texts), QUERY_BATCH_SIZE):
-        end_idx = min(start_idx + QUERY_BATCH_SIZE, len(s1_texts))
+    for start_idx in range(0, total_queries, QUERY_BATCH_SIZE):
+        end_idx = min(start_idx + QUERY_BATCH_SIZE, total_queries)
         batch_s1_texts = s1_texts[start_idx:end_idx]
         batch_s1_ids = s1_ids[start_idx:end_idx]
 
         s1_matrix = vectorizer.transform(batch_s1_texts)
-        sim_matrix = s1_matrix.dot(cand_matrix.T)
+        # Sparse matrix multiplication produces a scipy.sparse.csr_matrix
+        sim_matrix = s1_matrix.dot(cand_matrix.T).tocsr()
 
-        for i in range(s1_matrix.shape[0]):
-            row_sims = sim_matrix.getrow(i).toarray().ravel()
-            if actual_k == num_cands:
-                top_indices = np.argsort(-row_sims)[:actual_k]
+        for i in range(len(batch_s1_ids)):
+            row_start = sim_matrix.indptr[i]
+            row_end = sim_matrix.indptr[i + 1]
+            if row_start == row_end:
+                continue
+
+            row_indices = sim_matrix.indices[row_start:row_end]
+            row_data = sim_matrix.data[row_start:row_end]
+
+            # Filter by min_sim
+            valid_mask = row_data >= min_sim
+            if not np.any(valid_mask):
+                continue
+
+            valid_indices = row_indices[valid_mask]
+            valid_data = row_data[valid_mask]
+
+            # Top-K selection
+            if len(valid_data) > top_k:
+                part = np.argpartition(-valid_data, top_k)[:top_k]
+                sorted_sub = part[np.argsort(-valid_data[part])]
+                top_cand_idx = valid_indices[sorted_sub]
+                top_scores = valid_data[sorted_sub]
             else:
-                partitioned = np.argpartition(-row_sims, actual_k)[:actual_k]
-                top_indices = partitioned[np.argsort(-row_sims[partitioned])]
+                order = np.argsort(-valid_data)
+                top_cand_idx = valid_indices[order]
+                top_scores = valid_data[order]
 
-            rank = 1
             s1_id = batch_s1_ids[i]
-            for idx in top_indices:
-                score = float(row_sims[idx])
-                if score < min_sim:
-                    continue
+            for rank_0, (c_idx, score) in enumerate(zip(top_cand_idx, top_scores)):
                 results.append({
                     "s1_entity_id": s1_id,
-                    "candidate_entity_id": cand_ids_arr[idx],
+                    "candidate_entity_id": cand_ids_arr[c_idx],
                     "candidate_source": cand_source,
                     "country": country,
                     "blocking_channel": CHANNEL_NAME,
-                    "tfidf_rank": rank,
-                    "tfidf_similarity": round(score, 4),
+                    "tfidf_rank": rank_0 + 1,
+                    "tfidf_similarity": round(float(score), 4),
                 })
-                rank += 1
 
     return results
 

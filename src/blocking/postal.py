@@ -54,6 +54,8 @@ def postal_block(
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
+    max_candidates_per_key: int = 100,
+    max_block_size: int = 1000,
 ) -> pd.DataFrame:
     """Generate candidate pairs based on same postal / zip code."""
     logger.info("Running Channel [Postal Block] for S1 -> %s...", cand_source)
@@ -72,6 +74,7 @@ def postal_block(
     cand_ids = cand_df["entity_id"].astype(str).to_numpy()
 
     # Build candidate index: (country, postal) -> list of entity_id
+    logger.info("  Indexing %d candidate records for Postal / Zip...", len(cand_ids))
     cand_index: dict[tuple[str, str], list[str]] = defaultdict(list)
     for i in range(len(cand_ids)):
         addr = cand_addrs[i].strip()
@@ -94,7 +97,13 @@ def postal_block(
     cand_res: list[str] = []
     country_res: list[str] = []
 
-    for i in range(len(s1_ids)):
+    total_s1 = len(s1_ids)
+    log_interval = max(500_000, total_s1 // 4)
+    logger.info("  Querying %d S1 records against Postal / Zip index...", total_s1)
+
+    for i in range(total_s1):
+        if (i + 1) % log_interval == 0:
+            logger.info("  [Postal S1 -> %s] Queried %d / %d S1 records (%d pairs found)...", cand_source, i + 1, total_s1, len(s1_res))
         addr = s1_addrs[i].strip()
         row_nums = s1_nums[i].strip()
         country = s1_countries[i].strip() if country_aware else ""
@@ -105,6 +114,11 @@ def postal_block(
 
         matched = cand_index.get((country, postal))
         if matched:
+            if max_block_size > 0 and len(matched) > max_block_size:
+                matched = matched[:max_candidates_per_key]
+            elif max_candidates_per_key > 0 and len(matched) > max_candidates_per_key:
+                matched = matched[:max_candidates_per_key]
+
             for cid in matched:
                 s1_res.append(s1_ids[i])
                 cand_res.append(cid)

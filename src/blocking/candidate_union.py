@@ -55,26 +55,34 @@ def union_candidates(channel_dfs: list[pd.DataFrame]) -> pd.DataFrame:
     merged: dict[tuple[str, str], dict] = {}
 
     for df in valid_dfs:
-        for _, row in df.iterrows():
-            s1_id = str(row["s1_entity_id"]).strip()
-            cand_id = str(row["candidate_entity_id"]).strip()
+        s1_arr = df["s1_entity_id"].astype(str).to_numpy()
+        cand_arr = df["candidate_entity_id"].astype(str).to_numpy()
+        src_arr = df["candidate_source"].astype(str).to_numpy() if "candidate_source" in df.columns else [""] * len(df)
+        country_arr = df["country"].astype(str).to_numpy() if "country" in df.columns else [""] * len(df)
+        ch_arr = df["blocking_channel"].astype(str).to_numpy() if "blocking_channel" in df.columns else [""] * len(df)
+
+        has_tfidf_rank = "tfidf_rank" in df.columns
+        has_tfidf_sim = "tfidf_similarity" in df.columns
+        has_emb_rank = "embedding_rank" in df.columns
+        has_emb_sim = "embedding_similarity" in df.columns
+
+        tfidf_rank_arr = df["tfidf_rank"].to_numpy() if has_tfidf_rank else None
+        tfidf_sim_arr = df["tfidf_similarity"].to_numpy() if has_tfidf_sim else None
+        emb_rank_arr = df["embedding_rank"].to_numpy() if has_emb_rank else None
+        emb_sim_arr = df["embedding_similarity"].to_numpy() if has_emb_sim else None
+
+        n = len(s1_arr)
+        for i in range(n):
+            s1_id = s1_arr[i].strip()
+            cand_id = cand_arr[i].strip()
             key = (s1_id, cand_id)
-
-            channel = str(row.get("blocking_channel", "")).strip()
-            source = str(row.get("candidate_source", "")).strip()
-            country = str(row.get("country", "")).strip()
-
-            tfidf_rank = row.get("tfidf_rank", None)
-            tfidf_sim = row.get("tfidf_similarity", None)
-            emb_rank = row.get("embedding_rank", None)
-            emb_sim = row.get("embedding_similarity", None)
 
             if key not in merged:
                 merged[key] = {
                     "s1_entity_id": s1_id,
                     "candidate_entity_id": cand_id,
-                    "candidate_source": source,
-                    "country": country,
+                    "candidate_source": src_arr[i].strip() if i < len(src_arr) else "",
+                    "country": country_arr[i].strip() if i < len(country_arr) else "",
                     "channels_set": set(),
                     "tfidf_rank": None,
                     "tfidf_similarity": None,
@@ -83,24 +91,29 @@ def union_candidates(channel_dfs: list[pd.DataFrame]) -> pd.DataFrame:
                 }
 
             record = merged[key]
-            if channel:
-                record["channels_set"].add(channel)
-            if source and not record["candidate_source"]:
-                record["candidate_source"] = source
-            if country and not record["country"]:
-                record["country"] = country
+            ch = ch_arr[i].strip() if i < len(ch_arr) else ""
+            if ch:
+                record["channels_set"].add(ch)
 
-            # Update retrieval metadata if present
-            if pd.notna(tfidf_rank) and tfidf_rank is not None:
-                record["tfidf_rank"] = int(tfidf_rank)
-            if pd.notna(tfidf_sim) and tfidf_sim is not None:
-                record["tfidf_similarity"] = float(tfidf_sim)
-            if pd.notna(emb_rank) and emb_rank is not None:
-                record["embedding_rank"] = int(emb_rank)
-            if pd.notna(emb_sim) and emb_sim is not None:
-                record["embedding_similarity"] = float(emb_sim)
+            if tfidf_rank_arr is not None:
+                val = tfidf_rank_arr[i]
+                if pd.notna(val) and val is not None:
+                    record["tfidf_rank"] = int(val)
+            if tfidf_sim_arr is not None:
+                val = tfidf_sim_arr[i]
+                if pd.notna(val) and val is not None:
+                    record["tfidf_similarity"] = float(val)
+            if emb_rank_arr is not None:
+                val = emb_rank_arr[i]
+                if pd.notna(val) and val is not None:
+                    record["embedding_rank"] = int(val)
+            if emb_sim_arr is not None:
+                val = emb_sim_arr[i]
+                if pd.notna(val) and val is not None:
+                    record["embedding_similarity"] = float(val)
 
     # Format into rows
+    logger.info("Formatting %d unique candidate pairs into output schema...", len(merged))
     rows: list[dict] = []
     for (s1_id, cand_id), record in merged.items():
         channels_list = sorted(list(record["channels_set"]))

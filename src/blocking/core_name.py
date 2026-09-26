@@ -41,6 +41,8 @@ def core_name_block(
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
+    max_candidates_per_key: int = 100,
+    max_block_size: int = 1000,
 ) -> pd.DataFrame:
     """Generate candidate pairs where S1 and candidate entity share the same core name."""
     logger.info("Running Channel [Core Name Block] for S1 -> %s...", cand_source)
@@ -56,6 +58,7 @@ def core_name_block(
     cand_countries = cand_df[country_col].fillna("").astype(str).to_numpy() if country_col in cand_df.columns else [""] * len(cand_df)
     cand_ids = cand_df["entity_id"].astype(str).to_numpy()
 
+    logger.info("  Indexing %d candidate records for Core Name...", len(cand_ids))
     cand_index: dict[tuple[str, str], list[str]] = defaultdict(list)
     for i in range(len(cand_ids)):
         raw_name = cand_names[i].strip()
@@ -76,7 +79,13 @@ def core_name_block(
     cand_res: list[str] = []
     country_res: list[str] = []
 
-    for i in range(len(s1_ids)):
+    total_s1 = len(s1_ids)
+    log_interval = max(500_000, total_s1 // 4)
+    logger.info("  Querying %d S1 records against Core Name index...", total_s1)
+
+    for i in range(total_s1):
+        if (i + 1) % log_interval == 0:
+            logger.info("  [Core Name S1 -> %s] Queried %d / %d S1 records (%d pairs found)...", cand_source, i + 1, total_s1, len(s1_res))
         raw_name = s1_names[i].strip()
         if not raw_name:
             continue
@@ -86,6 +95,11 @@ def core_name_block(
         country = s1_countries[i].strip() if country_aware else ""
         matched = cand_index.get((country, core))
         if matched:
+            if max_block_size > 0 and len(matched) > max_block_size:
+                matched = matched[:max_candidates_per_key]
+            elif max_candidates_per_key > 0 and len(matched) > max_candidates_per_key:
+                matched = matched[:max_candidates_per_key]
+
             for cid in matched:
                 s1_res.append(s1_ids[i])
                 cand_res.append(cid)

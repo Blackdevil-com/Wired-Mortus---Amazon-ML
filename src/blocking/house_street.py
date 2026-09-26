@@ -63,6 +63,8 @@ def house_street_block(
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
+    max_candidates_per_key: int = 100,
+    max_block_size: int = 1000,
 ) -> pd.DataFrame:
     """Generate candidate pairs based on same house number + street token overlap."""
     logger.info("Running Channel [House + Street Block] for S1 -> %s...", cand_source)
@@ -80,7 +82,7 @@ def house_street_block(
     cand_nums = cand_df[num_col].fillna("").astype(str).to_numpy() if num_col in cand_df.columns else [""] * len(cand_df)
     cand_ids = cand_df["entity_id"].astype(str).to_numpy()
 
-    # Build candidate index: (country, house_number) -> list of (entity_id, street_tokens)
+    logger.info("  Indexing %d candidate records for House + Street...", len(cand_ids))
     cand_index: dict[tuple[str, str], list[tuple[str, set[str]]]] = defaultdict(list)
     for i in range(len(cand_ids)):
         addr = cand_addrs[i].strip()
@@ -103,7 +105,13 @@ def house_street_block(
     cand_res: list[str] = []
     country_res: list[str] = []
 
-    for i in range(len(s1_ids)):
+    total_s1 = len(s1_ids)
+    log_interval = max(500_000, total_s1 // 4)
+    logger.info("  Querying %d S1 records against House + Street index...", total_s1)
+
+    for i in range(total_s1):
+        if (i + 1) % log_interval == 0:
+            logger.info("  [House + Street S1 -> %s] Queried %d / %d S1 records (%d pairs found)...", cand_source, i + 1, total_s1, len(s1_res))
         addr = s1_addrs[i].strip()
         row_nums = s1_nums[i].strip()
         country = s1_countries[i].strip() if country_aware else ""
@@ -114,11 +122,20 @@ def house_street_block(
 
         candidates_with_same_house = cand_index.get((country, house_num))
         if candidates_with_same_house:
-            for cand_id, cand_tokens in candidates_with_same_house:
+            if max_block_size > 0 and len(candidates_with_same_house) > max_block_size:
+                candidates_to_check = candidates_with_same_house[:max_candidates_per_key]
+            else:
+                candidates_to_check = candidates_with_same_house
+
+            matched_count = 0
+            for cand_id, cand_tokens in candidates_to_check:
                 if s1_tokens & cand_tokens:
                     s1_res.append(s1_ids[i])
                     cand_res.append(cand_id)
                     country_res.append(country)
+                    matched_count += 1
+                    if max_candidates_per_key > 0 and matched_count >= max_candidates_per_key:
+                        break
 
     if not s1_res:
         return pd.DataFrame(columns=["s1_entity_id", "candidate_entity_id", "candidate_source", "country", "blocking_channel"])

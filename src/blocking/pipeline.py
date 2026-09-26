@@ -66,8 +66,18 @@ def run_stage1_blocking(
     # ── 1. Exact Name Blocking ──────────────────────────────────────────────
     if config.use_exact_name_block:
         logger.info("[1/6] Running Exact Normalized Name Blocking...")
-        exact_s2 = exact_name_block(s1_df, s2_df, "S2", country_aware=config.country_aware)
-        exact_s3 = exact_name_block(s1_df, s3_df, "S3", country_aware=config.country_aware)
+        exact_s2 = exact_name_block(
+            s1_df, s2_df, "S2",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
+        exact_s3 = exact_name_block(
+            s1_df, s3_df, "S3",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
         exact_all = pd.concat([exact_s2, exact_s3], ignore_index=True)
         channel_dfs.append(exact_all)
         channel_dict["exact_name"] = exact_all
@@ -76,8 +86,18 @@ def run_stage1_blocking(
     # ── 2. Core Name Blocking ───────────────────────────────────────────────
     if config.use_core_name_block:
         logger.info("[2/6] Running Core Name Blocking...")
-        core_s2 = core_name_block(s1_df, s2_df, "S2", country_aware=config.country_aware)
-        core_s3 = core_name_block(s1_df, s3_df, "S3", country_aware=config.country_aware)
+        core_s2 = core_name_block(
+            s1_df, s2_df, "S2",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
+        core_s3 = core_name_block(
+            s1_df, s3_df, "S3",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
         core_all = pd.concat([core_s2, core_s3], ignore_index=True)
         channel_dfs.append(core_all)
         channel_dict["core_name"] = core_all
@@ -86,8 +106,18 @@ def run_stage1_blocking(
     # ── 3. House + Street Blocking ──────────────────────────────────────────
     if config.use_house_street_block:
         logger.info("[3/6] Running House Number + Street Token Blocking...")
-        hs_s2 = house_street_block(s1_df, s2_df, "S2", country_aware=config.country_aware)
-        hs_s3 = house_street_block(s1_df, s3_df, "S3", country_aware=config.country_aware)
+        hs_s2 = house_street_block(
+            s1_df, s2_df, "S2",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
+        hs_s3 = house_street_block(
+            s1_df, s3_df, "S3",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
         hs_all = pd.concat([hs_s2, hs_s3], ignore_index=True)
         channel_dfs.append(hs_all)
         channel_dict["house_street"] = hs_all
@@ -96,8 +126,18 @@ def run_stage1_blocking(
     # ── 4. Postal Blocking ──────────────────────────────────────────────────
     if config.use_postal_block:
         logger.info("[4/6] Running Postal / Zip Code Blocking...")
-        post_s2 = postal_block(s1_df, s2_df, "S2", country_aware=config.country_aware)
-        post_s3 = postal_block(s1_df, s3_df, "S3", country_aware=config.country_aware)
+        post_s2 = postal_block(
+            s1_df, s2_df, "S2",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
+        post_s3 = postal_block(
+            s1_df, s3_df, "S3",
+            country_aware=config.country_aware,
+            max_candidates_per_key=config.max_candidates_per_key,
+            max_block_size=config.max_block_size,
+        )
         post_all = pd.concat([post_s2, post_s3], ignore_index=True)
         channel_dfs.append(post_all)
         channel_dict["postal"] = post_all
