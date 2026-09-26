@@ -9,13 +9,19 @@ Usage
 Process all available files automatically:
     python run_preprocessing.py
 
+Process only training files:
+    python run_preprocessing.py --split train
+
+Process only test files:
+    python run_preprocessing.py --split test
+
 Process a single file:
-    python run_preprocessing.py \\
-        --input  data/raw/train_source1.tsv \\
+    python run_preprocessing.py \
+        --input  data/raw/train_source1.tsv \
         --output data/processed/train_source1_preprocessed.tsv
 
-With custom encoding:
-    python run_preprocessing.py --input ... --output ... --encoding utf-8-sig
+With custom input / output directories:
+    python run_preprocessing.py --raw-dir /content/drive/MyDrive/raw --processed-dir /content/drive/MyDrive/processed
 """
 from __future__ import annotations
 
@@ -38,20 +44,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Default file mapping (raw -> processed)
+# Default file mappings (raw -> processed)
 # ---------------------------------------------------------------------------
 
-_RAW = Path("data/raw")
-_PROC = Path("data/processed")
-
-_DEFAULT_FILES: list[tuple[str, str]] = [
+_TRAIN_FILES: list[tuple[str, str]] = [
     ("train_source1.tsv", "train_source1_preprocessed.tsv"),
     ("train_source2.tsv", "train_source2_preprocessed.tsv"),
     ("train_source3.tsv", "train_source3_preprocessed.tsv"),
+]
+
+_TEST_FILES: list[tuple[str, str]] = [
     ("test_source1.tsv",  "test_source1_preprocessed.tsv"),
     ("test_source2.tsv",  "test_source2_preprocessed.tsv"),
     ("test_source3.tsv",  "test_source3_preprocessed.tsv"),
 ]
+
+_ALL_FILES: list[tuple[str, str]] = _TRAIN_FILES + _TEST_FILES
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +83,24 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         metavar="PATH",
         help="Path for the preprocessed TSV output file. Requires --input.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["all", "train", "test"],
+        default="all",
+        help="Which split to process in batch mode: 'train', 'test', or 'all' (default: 'all').",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        default="data/raw",
+        metavar="DIR",
+        help="Directory containing raw TSV files (default: data/raw).",
+    )
+    parser.add_argument(
+        "--processed-dir",
+        default="data/processed",
+        metavar="DIR",
+        help="Directory where preprocessed TSV files will be written (default: data/processed).",
     )
     parser.add_argument(
         "--encoding",
@@ -109,16 +135,31 @@ def main() -> None:
             sys.exit(1)
         return
 
-    # ── Batch mode: process all default files ───────────────────────────────
+    # ── Batch mode ──────────────────────────────────────────────────────────
+    raw_dir = Path(args.raw_dir)
+    processed_dir = Path(args.processed_dir)
+
+    if args.split == "train":
+        files_to_process = _TRAIN_FILES
+        split_label = "TRAIN"
+    elif args.split == "test":
+        files_to_process = _TEST_FILES
+        split_label = "TEST"
+    else:
+        files_to_process = _ALL_FILES
+        split_label = "ALL (TRAIN + TEST)"
+
     logger.info("=" * 60)
-    logger.info("ENTITY RESOLUTION -- STAGE 1  (BATCH MODE)")
+    logger.info("ENTITY RESOLUTION -- STAGE 1 (BATCH MODE: %s)", split_label)
+    logger.info("Raw Directory:       %s", raw_dir)
+    logger.info("Processed Directory: %s", processed_dir)
     logger.info("=" * 60)
 
     success = skipped = failed = 0
 
-    for raw_name, proc_name in _DEFAULT_FILES:
-        in_path = _RAW / raw_name
-        out_path = _PROC / proc_name
+    for raw_name, proc_name in files_to_process:
+        in_path = raw_dir / raw_name
+        out_path = processed_dir / proc_name
 
         if not in_path.exists():
             logger.warning("[SKIP] Input not found: %s", in_path)
@@ -134,8 +175,8 @@ def main() -> None:
 
     logger.info("=" * 60)
     logger.info(
-        "BATCH COMPLETE  success=%d  skipped=%d  failed=%d",
-        success, skipped, failed,
+        "BATCH COMPLETE (%s)  success=%d  skipped=%d  failed=%d",
+        split_label, success, skipped, failed,
     )
     logger.info("=" * 60)
 
