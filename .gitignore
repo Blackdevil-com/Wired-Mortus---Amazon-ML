@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & virtualenv
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# Pytest & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Stage 1 & downstream data directories (keep dir structure with .gitkeep if needed)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/candidates/*
+!data/candidates/.gitkeep
+data/features/*
+!data/features/.gitkeep
+
+# Models and temporary outputs
+models/*
+outputs/*
+*.tsv.tmp
+
+# OS files
+.DS_Store
+Thumbs.db

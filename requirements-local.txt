@@ -1,0 +1,4 @@
+# Stage 1 Preprocessing Requirements (Local Development)
+pandas>=2.0.0
+numpy>=1.24.0
+pytest>=7.0.0
