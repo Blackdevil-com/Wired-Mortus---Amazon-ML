@@ -1,4 +1,8 @@
-# Stage 1 Preprocessing Requirements (Local Development)
+# CASCADE-ER v2 Requirements (Local Development)
 pandas>=2.0.0
 numpy>=1.24.0
+scikit-learn>=1.2.0
+sentence-transformers>=2.2.0
+torch>=2.0.0
+faiss-cpu>=1.7.4
 pytest>=7.0.0

@@ -1,196 +1,167 @@
-# Entity Resolution — Stage 1: Preprocessing
+# CASCADE-ER v2: Stage 1 — WIDE BLOCKING
 
-A clean, modular Python preprocessing engine built for large-scale business entity resolution. Designed for local development in **Antigravity** and execution in **Google Colab**.
+High-Recall Candidate Generation Engine for Large-Scale Business Entity Resolution.
+Built with **Antigravity** and optimized for **Google Colab** execution.
 
 ---
 
-## 1. Project Architecture & Stage 1 Scope
-
-The end-to-end entity-resolution architecture consists of four distinct stages:
+## 1. Pipeline Architecture
 
 ```text
 DATASET INPUTS
-    │
-    ├── train_source1.tsv
-    ├── train_source2.tsv
-    ├── train_source3.tsv
-    ├── test_source1.tsv
-    ├── test_source2.tsv
-    └── test_source3.tsv
-    │
-    ▼
-STAGE 1: PREPROCESSING            ← [THIS PROJECT]
-    │
-    ▼
-STAGE 2: HYBRID BLOCKING          (Stage 2 - Not implemented here)
-    │
-    ▼
-STAGE 3: FEATURE EXTRACTION       (Stage 3 - Not implemented here)
-    │
-    ▼
-STAGE 4: CLASSIFICATION           (Stage 4 - Not implemented here)
-    │
-    ▼
+  train: train_source1.tsv, train_source2.tsv, train_source3.tsv, train_ground_truth.tsv
+  test:  test_source1.tsv,  test_source2.tsv,  test_source3.tsv
+                   │
+                   ▼
+STAGE 0: PREPROCESSING & NORMALIZATION (Stage 0)
+                   │
+                   ▼
+STAGE 1: WIDE BLOCKING [THIS STAGE]
+                   │
+                   ▼
+INTERNAL CANDIDATE UNION (`stage1_candidate_union.tsv`)
+                   │
+                   ▼
+STAGE 2: SUPERVISED META-BLOCK (Stage 2 - Downstream)
+                   │
+                   ▼
+STAGE 3: HEAVY FEATURE EXTRACTION (Stage 3 - Downstream)
+                   │
+                   ▼
+STAGE 4: CLASSIFICATION & DECISION (Stage 4 - Downstream)
+                   │
+                   ▼
 matching_results.tsv
 ```
 
-> **CRITICAL SCOPE BOUNDARY:**
-> **Stage 1 is preprocessing only.** Candidate generation, hybrid blocking, TF-IDF, FAISS vector index, dense embeddings, Sentence Transformers, Levenshtein/Jaro-Winkler distances, cross-encoder scoring, classification (LightGBM/CatBoost), threshold optimization, and matching decisions belong to later stages and are **intentionally not implemented**.
+---
+
+## 2. Stage 1 Objective: MAXIMIZE CANDIDATE RECALL
+
+Stage 1 discovers all plausible matches between Query Entities ($S_1$) and Candidate Pools ($S_2$ and $S_3$) by unioning six complementary blocking channels:
+
+1. **Exact Normalized Name Block (`exact_name`)**: Exact match on `business_name_normalized` within the same country.
+2. **Core Name Block (`core_name`)**: Strips corporate legal suffixes (`Inc`, `LLC`, `Ltd`, `Pvt`, `GmbH`, `SARL`, etc.) to find corporate variants (e.g., `ABC Private Limited` $\leftrightarrow$ `ABC Ltd`).
+3. **House Number + Street Token Block (`house_street`)**: Matches identical house numbers with overlapping street tokens (e.g., `1795 Westchester Drive` $\leftrightarrow$ `1795 Westchester Dr`).
+4. **Postal / Zip Code Block (`postal`)**: Matches identical postal codes / PIN codes within the same country.
+5. **Character-level TF-IDF Retrieval (`tfidf`)**: Character n-grams (3–5) with Top-K sparse cosine retrieval ($K=30$).
+6. **Multilingual Dense Embeddings / FAISS (`embedding`)**: Pretrained multilingual sentence transformers (`paraphrase-multilingual-MiniLM-L12-v2`) with Top-K FAISS retrieval ($K=20$).
 
 ---
 
-## 2. Supported Datasets
+## 3. Output Schema (`stage1_candidate_union.tsv`)
 
-The preprocessing engine processes six TSV sources:
-
-```text
-data/raw/train_source1.tsv  →  data/processed/train_source1_preprocessed.tsv
-data/raw/train_source2.tsv  →  data/processed/train_source2_preprocessed.tsv
-data/raw/train_source3.tsv  →  data/processed/train_source3_preprocessed.tsv
-data/raw/test_source1.tsv   →  data/processed/test_source1_preprocessed.tsv
-data/raw/test_source2.tsv   →  data/processed/test_source2_preprocessed.tsv
-data/raw/test_source3.tsv   →  data/processed/test_source3_preprocessed.tsv
-```
-
-### Core Input Fields
-* `entity_id` — Unique record identifier (e.g. `S1-925783039`)
-* `business_name` — Raw business / entity name
-* `business_address` — Raw postal address string
-* `country` — Country code or country name
-
-*Note: All original columns and original cell values are strictly preserved without mutation.*
-
----
-
-## 3. Output Columns & Preprocessing Specifications
-
-For each record, all original input fields are retained, and the following derived fields are generated:
-
-| Column | Description | Example Input → Output |
+| Column | Type | Description |
 |---|---|---|
-| `business_name_nfkd` | NFKD-decomposed + lowercase name | `"Orelee's Barbershop"` → `"orelee's barbershop"` |
-| `business_name_normalized` | Fully normalized name (punct → space) | `"Orelee's Barbershop"` → `"orelee s barbershop"` |
-| `business_name_tokens` | Non-destructive token list as JSON | `["orelee", "s", "barbershop"]` |
-| `business_address_nfkd` | NFKD-decomposed + lowercase address | `"1795 Westchester Dr, NC"` → `"1795 westchester dr, nc"` |
-| `business_address_normalized` | Fully normalized address | `"1795 westchester dr nc"` |
-| `business_address_tokens` | Non-destructive token list as JSON | `["1795", "westchester", "dr", "nc"]` |
-| `country_normalized` | Normalized country code | `"US"` → `"us"` |
-| `row_numbers` | All numeric sequences preserved from row | `["1795"]` |
+| `s1_entity_id` | string | Query entity identifier from $S_1$ |
+| `candidate_entity_id` | string | Candidate entity identifier from $S_2$ or $S_3$ |
+| `candidate_source` | string | Source table (`S2` or `S3`) |
+| `country` | string | Normalized country code |
+| `blocking_channels` | JSON array | List of channels that found this pair (e.g. `["exact_name", "tfidf", "embedding"]`) |
+| `blocking_channel_count` | int | Total number of channels discovering the pair |
+| `tfidf_rank` | int / null | 1-indexed retrieval rank from TF-IDF |
+| `tfidf_similarity` | float / null | TF-IDF cosine similarity score |
+| `embedding_rank` | int / null | 1-indexed retrieval rank from dense embeddings |
+| `embedding_similarity` | float / null | Embedding cosine similarity score |
 
 ---
 
-## 4. Preprocessing Rules
-
-### Text Normalization Pipeline (`normalize_text`)
-1. **Handle Missing Values**: Coerce `None`, `NaN`, `math.nan` to `""`. Never produce `"nan"`, `"none"`, or `"null"`.
-2. **Unicode NFKD Normalization**: Decompose composite characters (`unicodedata.normalize("NFKD", text)`).
-3. **Strip Combining Marks (`Mn`)**: Strip Latin diacritics (`Café` → `cafe`) while preserving non-Latin scripts (Arabic, CJK, Devanagari).
-4. **Lowercase Conversion**: Standard Unicode-aware lowercase.
-5. **Punctuation & Separators to Whitespace**: Replace punctuation (`+`, `/`, `-`, `'`, `,`, `.`) with whitespace so tokens are never accidentally concatenated (`Orelee's` → `orelee s`, `B+ Retail` → `b retail`).
-6. **Preserve Numbers & Alphanumerics**: Digits and mixed alphanumeric codes (`1795`, `2100`, `A12B`, `Unit7`, `B2`) are preserved without loss.
-7. **Normalize Whitespace**: Collapse multiple whitespace runs and strip leading/trailing spaces.
-
----
-
-## 5. Directory Structure
+## 4. Project Directory Structure
 
 ```text
-entity-resolution/
+entity_resolution_preprocessing/
 │
 ├── data/
-│   ├── raw/                       # Raw TSV dataset files
-│   └── processed/                 # Generated Stage 1 preprocessed TSV files
+│   ├── raw/
+│   │   ├── train/                 # Raw training files (train_source1.tsv, ..., train_ground_truth.tsv)
+│   │   └── test/                  # Raw test files (test_source1.tsv, ...)
+│   ├── processed/
+│   │   ├── train/                 # Stage 0 preprocessed train TSVs
+│   │   └── test/                  # Stage 0 preprocessed test TSVs
+│   ├── candidates/                # Generated Stage 1 candidate union
+│   │   └── stage1_candidate_union.tsv
+│   └── cache/                     # Embedding checkpoints (.npy)
 │
 ├── src/
-│   └── preprocessing/
-│       ├── __init__.py            # Package exports
-│       ├── unicode_normalizer.py  # Safe coercion & NFKD normalization
-│       ├── text_normalizer.py     # Text normalization pipeline
-│       ├── tokenizer.py           # Whitespace tokenizer & number extractor
-│       └── pipeline.py            # Streaming chunk processor & validator
+│   ├── preprocessing/             # Stage 0 Normalization modules
+│   │   ├── unicode_normalizer.py
+│   │   ├── text_normalizer.py
+│   │   ├── tokenizer.py
+│   │   └── pipeline.py
+│   │
+│   ├── blocking/                  # Stage 1 Wide Blocking modules
+│   │   ├── __init__.py
+│   │   ├── config.py              # Centralized hyperparameters & channel toggles
+│   │   ├── exact_name.py          # Channel 1: Exact Name Block
+│   │   ├── core_name.py           # Channel 2: Core Name Block
+│   │   ├── house_street.py        # Channel 3: House + Street Token Block
+│   │   ├── postal.py              # Channel 4: Postal / Zip Code Block
+│   │   ├── tfidf_blocking.py      # Channel 5: Character TF-IDF Retrieval
+│   │   ├── embedding_blocking.py  # Channel 6: Dense Embedding Retrieval
+│   │   ├── faiss_index.py         # FAISS vector index wrapper
+│   │   ├── candidate_union.py     # Multi-channel union & deduplication
+│   │   └── pipeline.py            # End-to-end blocking pipeline
+│   │
+│   └── evaluation/                # Ground-truth evaluation modules
+│       ├── __init__.py
+│       └── blocking_recall.py     # Overall union & per-channel recall scoring
 │
-├── tests/
-│   ├── test_unicode_normalizer.py # Unicode & safe_str unit tests
-│   ├── test_text_normalizer.py    # Text normalizer unit tests
-│   ├── test_tokenizer.py          # Tokenizer & number extraction tests
-│   └── test_pipeline.py           # End-to-end pipeline integration tests
+├── tests/                         # 127 Unit & Integration tests
+│   ├── test_exact_name.py
+│   ├── test_core_name.py
+│   ├── test_house_street.py
+│   ├── test_postal.py
+│   ├── test_tfidf_blocking.py
+│   ├── test_embedding_blocking.py
+│   ├── test_candidate_union.py
+│   ├── test_blocking_pipeline.py
+│   ├── test_blocking_recall.py
+│   ├── test_text_normalizer.py
+│   ├── test_tokenizer.py
+│   └── test_unicode_normalizer.py
 │
 ├── notebooks/
-│   └── stage1_colab_runner.ipynb  # Google Colab execution notebook
+│   └── stage1_colab_runner.ipynb  # Automated Google Colab Execution Notebook
 │
-├── requirements-colab.txt         # Lightweight Colab dependencies
-├── requirements-local.txt         # Local development dependencies
-├── README.md                      # Documentation
-├── .gitignore                     # Git configuration
-└── run_preprocessing.py           # CLI entry point
+├── requirements-colab.txt
+├── requirements-local.txt
+├── run_preprocessing.py           # Stage 0 CLI entry point
+└── run_stage1_blocking.py         # Stage 1 CLI entry point
 ```
 
 ---
 
-## 6. How to Run
+## 5. Execution Instructions
 
-### 6.1 Local Execution
+### Local Execution
 
-1. **Install requirements:**
-   ```bash
-   pip install -r requirements-local.txt
-   ```
+```bash
+# 1. Install dependencies
+pip install -r requirements-local.txt
 
-2. **Run tests:**
-   ```bash
-   pytest tests/ -v
-   ```
+# 2. Run unit & integration tests
+pytest tests/ -v
 
-3. **Process all six datasets (Batch Mode):**
-   ```bash
-   python run_preprocessing.py
-   ```
+# 3. Run Stage 1 Wide Blocking on Training data
+python run_stage1_blocking.py \
+    --split train \
+    --s1 data/processed/train/train_source1_preprocessed.tsv \
+    --s2 data/processed/train/train_source2_preprocessed.tsv \
+    --s3 data/processed/train/train_source3_preprocessed.tsv \
+    --ground-truth data/raw/train/train_ground_truth.tsv \
+    --output data/candidates/stage1_candidate_union.tsv
 
-4. **Process a single file:**
-   ```bash
-   python run_preprocessing.py \
-       --input data/raw/train_source1.tsv \
-       --output data/processed/train_source1_preprocessed.tsv
-   ```
+# 4. Run Stage 1 Wide Blocking on Testing data
+python run_stage1_blocking.py \
+    --split test \
+    --s1 data/processed/test/test_source1_preprocessed.tsv \
+    --s2 data/processed/test/test_source2_preprocessed.tsv \
+    --s3 data/processed/test/test_source3_preprocessed.tsv \
+    --output data/candidates/stage1_candidate_union_test.tsv
+```
 
----
+### Google Colab Execution
 
-### 6.2 Google Colab Execution
-
-1. Open `notebooks/stage1_colab_runner.ipynb` in Google Colab.
-2. Install dependencies:
-   ```python
-   !pip install -r requirements-colab.txt
-   ```
-3. Run tests and execute preprocessing:
-   ```python
-   !pytest tests/ -v
-   !python run_preprocessing.py
-   ```
-
----
-
-### 6.3 Google Drive Support
-
-To process datasets stored on Google Drive in Colab:
-1. Mount Google Drive:
-   ```python
-   from google.colab import drive
-   drive.mount('/content/drive')
-   ```
-2. Place datasets at:
-   `/content/drive/MyDrive/entity-resolution/data/raw/`
-3. The Colab runner will read the datasets and write outputs to `data/processed/`.
-
----
-
-## 7. What Stage 1 Intentionally Does NOT Do
-
-Stage 1 strictly avoids downstream machine learning and matching logic:
-* ❌ No stopword removal or stemming/lemmatization
-* ❌ No translation, phonetic encoding (Soundex/Metaphone), or abbreviation expansion
-* ❌ No candidate generation or blocking
-* ❌ No TF-IDF, FAISS, or dense embeddings
-* ❌ No Levenshtein or Jaro-Winkler distance calculations
-* ❌ No classification models (LightGBM, CatBoost, Cross-Encoders)
-* ❌ No matching decision files or candidate pairs
+1. Open `notebooks/stage1_colab_runner.ipynb` in Google Colab (enable GPU under Runtime $\rightarrow$ Change runtime type).
+2. Execute the notebook top-to-bottom.
+3. Intermediate embeddings are automatically cached to Google Drive so session reconnects do not repeat heavy computations.
