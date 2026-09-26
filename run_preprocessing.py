@@ -4,24 +4,24 @@ run_preprocessing.py
 
 Entry point for Stage 1: Entity Resolution Preprocessing.
 
+Supports separate processing for:
+  - Training datasets: data/raw/train -> data/processed/train
+  - Testing datasets:  data/raw/test  -> data/processed/test
+  - All datasets:      data/raw       -> data/processed
+
 Usage
 -----
-Process all available files automatically:
-    python run_preprocessing.py
+Process all datasets:
+    python run_preprocessing.py --split all
 
-Process only training files:
+Process only training datasets:
     python run_preprocessing.py --split train
 
-Process only test files:
+Process only test datasets:
     python run_preprocessing.py --split test
 
-Process a single file:
-    python run_preprocessing.py \
-        --input  data/raw/train_source1.tsv \
-        --output data/processed/train_source1_preprocessed.tsv
-
-With custom input / output directories:
-    python run_preprocessing.py --raw-dir /content/drive/MyDrive/raw --processed-dir /content/drive/MyDrive/processed
+With explicit folder paths:
+    python run_preprocessing.py --raw-dir data/raw/train --processed-dir data/processed/train
 """
 from __future__ import annotations
 
@@ -44,22 +44,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Default file mappings (raw -> processed)
+# Default file mappings
 # ---------------------------------------------------------------------------
 
-_TRAIN_FILES: list[tuple[str, str]] = [
-    ("train_source1.tsv", "train_source1_preprocessed.tsv"),
-    ("train_source2.tsv", "train_source2_preprocessed.tsv"),
-    ("train_source3.tsv", "train_source3_preprocessed.tsv"),
-]
-
-_TEST_FILES: list[tuple[str, str]] = [
-    ("test_source1.tsv",  "test_source1_preprocessed.tsv"),
-    ("test_source2.tsv",  "test_source2_preprocessed.tsv"),
-    ("test_source3.tsv",  "test_source3_preprocessed.tsv"),
-]
-
-_ALL_FILES: list[tuple[str, str]] = _TRAIN_FILES + _TEST_FILES
+_TRAIN_NAMES = ["train_source1.tsv", "train_source2.tsv", "train_source3.tsv"]
+_TEST_NAMES = ["test_source1.tsv", "test_source2.tsv", "test_source3.tsv"]
 
 
 # ---------------------------------------------------------------------------
@@ -88,19 +77,19 @@ def _parse_args() -> argparse.Namespace:
         "--split",
         choices=["all", "train", "test"],
         default="all",
-        help="Which split to process in batch mode: 'train', 'test', or 'all' (default: 'all').",
+        help="Which split to process: 'train', 'test', or 'all' (default: 'all').",
     )
     parser.add_argument(
         "--raw-dir",
-        default="data/raw",
+        default="",
         metavar="DIR",
-        help="Directory containing raw TSV files (default: data/raw).",
+        help="Directory containing raw TSV files (default: auto-detected from split).",
     )
     parser.add_argument(
         "--processed-dir",
-        default="data/processed",
+        default="",
         metavar="DIR",
-        help="Directory where preprocessed TSV files will be written (default: data/processed).",
+        help="Directory where preprocessed TSV files will be written (default: auto-detected from split).",
     )
     parser.add_argument(
         "--encoding",
@@ -109,6 +98,68 @@ def _parse_args() -> argparse.Namespace:
         help="File encoding (default: utf-8).",
     )
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_paths(split: str, raw_dir_arg: str, proc_dir_arg: str) -> tuple[Path, Path]:
+    """Resolve raw and processed directories based on split and user arguments."""
+    if raw_dir_arg:
+        raw_dir = Path(raw_dir_arg)
+    else:
+        if split == "train" and Path("data/raw/train").exists():
+            raw_dir = Path("data/raw/train")
+        elif split == "test" and Path("data/raw/test").exists():
+            raw_dir = Path("data/raw/test")
+        else:
+            raw_dir = Path("data/raw")
+
+    if proc_dir_arg:
+        proc_dir = Path(proc_dir_arg)
+    else:
+        if split == "train" and (raw_dir == Path("data/raw/train") or Path("data/raw/train").exists()):
+            proc_dir = Path("data/processed/train")
+        elif split == "test" and (raw_dir == Path("data/raw/test") or Path("data/raw/test").exists()):
+            proc_dir = Path("data/processed/test")
+        else:
+            proc_dir = Path("data/processed")
+
+    return raw_dir, proc_dir
+
+
+def _collect_files(raw_dir: Path, split: str) -> list[tuple[Path, str]]:
+    """
+    Collect input files to process.
+    Matches expected file names or any TSV file found in the raw directory.
+    """
+    pairs: list[tuple[Path, str]] = []
+
+    if split == "train":
+        expected = _TRAIN_NAMES
+    elif split == "test":
+        expected = _TEST_NAMES
+    else:
+        expected = _TRAIN_NAMES + _TEST_NAMES
+
+    # Check for expected files
+    found_expected = set()
+    for name in expected:
+        p = raw_dir / name
+        if p.exists():
+            out_name = f"{p.stem}_preprocessed.tsv"
+            pairs.append((p, out_name))
+            found_expected.add(name)
+
+    # Also discover any other .tsv files in the raw_dir not in expected list
+    for p in sorted(raw_dir.glob("*.tsv")):
+        if p.name not in found_expected and not p.name.endswith("_preprocessed.tsv"):
+            out_name = f"{p.stem}_preprocessed.tsv"
+            pairs.append((p, out_name))
+
+    return pairs
 
 
 # ---------------------------------------------------------------------------
@@ -136,36 +187,24 @@ def main() -> None:
         return
 
     # ── Batch mode ──────────────────────────────────────────────────────────
-    raw_dir = Path(args.raw_dir)
-    processed_dir = Path(args.processed_dir)
-
-    if args.split == "train":
-        files_to_process = _TRAIN_FILES
-        split_label = "TRAIN"
-    elif args.split == "test":
-        files_to_process = _TEST_FILES
-        split_label = "TEST"
-    else:
-        files_to_process = _ALL_FILES
-        split_label = "ALL (TRAIN + TEST)"
+    raw_dir, processed_dir = _resolve_paths(args.split, args.raw_dir, args.processed_dir)
+    file_pairs = _collect_files(raw_dir, args.split)
 
     logger.info("=" * 60)
-    logger.info("ENTITY RESOLUTION -- STAGE 1 (BATCH MODE: %s)", split_label)
+    logger.info("ENTITY RESOLUTION -- STAGE 1 (BATCH MODE: %s)", args.split.upper())
     logger.info("Raw Directory:       %s", raw_dir)
     logger.info("Processed Directory: %s", processed_dir)
+    logger.info("Files detected:      %d", len(file_pairs))
     logger.info("=" * 60)
 
-    success = skipped = failed = 0
+    if not file_pairs:
+        logger.warning("No TSV files found to process in %s", raw_dir)
+        return
 
-    for raw_name, proc_name in files_to_process:
-        in_path = raw_dir / raw_name
-        out_path = processed_dir / proc_name
+    success = failed = 0
 
-        if not in_path.exists():
-            logger.warning("[SKIP] Input not found: %s", in_path)
-            skipped += 1
-            continue
-
+    for in_path, out_name in file_pairs:
+        out_path = processed_dir / out_name
         try:
             process_file(in_path, out_path, encoding=args.encoding)
             success += 1
@@ -175,8 +214,8 @@ def main() -> None:
 
     logger.info("=" * 60)
     logger.info(
-        "BATCH COMPLETE (%s)  success=%d  skipped=%d  failed=%d",
-        split_label, success, skipped, failed,
+        "BATCH COMPLETE (%s)  success=%d  failed=%d",
+        args.split.upper(), success, failed,
     )
     logger.info("=" * 60)
 
