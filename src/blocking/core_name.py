@@ -2,8 +2,7 @@
 src/blocking/core_name.py
 
 Channel 2: Core Name Blocking.
-Generates candidate pairs when the core business name (stripped of legal corporate
-suffixes such as LLC, Inc, Corp, Ltd, Pvt, etc.) matches.
+Optimized with vector extraction and hash-based indexing.
 """
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_NAME = "core_name"
 
-# Common legal entity designators and corporate suffixes across countries
 _LEGAL_SUFFIXES_RE = re.compile(
     r"\b("
     r"private limited|pvt ltd|pvt limited|ltd|limited|inc|incorporated|"
@@ -30,22 +28,10 @@ _LEGAL_SUFFIXES_RE = re.compile(
 
 
 def extract_core_name(name_normalized: str) -> str:
-    """
-    Extract the core business name by stripping common corporate suffixes
-    and collapsing whitespace.
-
-    Examples:
-        "abc private limited" -> "abc"
-        "abc pvt ltd"         -> "abc"
-        "abc sarl"            -> "abc"
-        "prime money llc"     -> "prime money"
-        "custom wealth services llc" -> "custom wealth"
-    """
+    """Extract core business name by stripping common corporate suffixes."""
     if not name_normalized:
         return ""
-    # Strip suffixes
     core = _LEGAL_SUFFIXES_RE.sub(" ", name_normalized)
-    # Collapse whitespace and strip
     core = " ".join(core.split()).strip()
     return core if len(core) >= 2 else name_normalized.strip()
 
@@ -56,18 +42,7 @@ def core_name_block(
     cand_source: str,
     country_aware: bool = True,
 ) -> pd.DataFrame:
-    """
-    Generate candidate pairs where S1 and candidate entity share the same core name.
-
-    Args:
-        s1_df: DataFrame of S1 query records.
-        cand_df: DataFrame of candidate records (S2 or S3).
-        cand_source: Label ('S2' or 'S3').
-        country_aware: Whether to restrict matches to the same country.
-
-    Returns:
-        DataFrame of candidate pairs for the 'core_name' channel.
-    """
+    """Generate candidate pairs where S1 and candidate entity share the same core name."""
     logger.info("Running Channel [Core Name Block] for S1 -> %s...", cand_source)
 
     if s1_df.empty or cand_df.empty:
@@ -76,42 +51,56 @@ def core_name_block(
     country_col = "country_normalized"
     name_col = "business_name_normalized"
 
-    # Build candidate index
-    cand_index: dict[tuple[str, str], list[str]] = defaultdict(list)
+    # Fast vector extraction
+    cand_names = cand_df[name_col].fillna("").astype(str).to_numpy()
+    cand_countries = cand_df[country_col].fillna("").astype(str).to_numpy() if country_col in cand_df.columns else [""] * len(cand_df)
+    cand_ids = cand_df["entity_id"].astype(str).to_numpy()
 
-    for _, row in cand_df[[name_col, country_col, "entity_id"]].iterrows():
-        raw_name = str(row[name_col]).strip()
-        country = str(row[country_col]).strip()
+    cand_index: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for i in range(len(cand_ids)):
+        raw_name = cand_names[i].strip()
+        if not raw_name:
+            continue
         core = extract_core_name(raw_name)
         if not core:
             continue
-        key = (country, core) if country_aware else ("", core)
-        cand_index[key].append(row["entity_id"])
+        country = cand_countries[i].strip() if country_aware else ""
+        cand_index[(country, core)].append(cand_ids[i])
 
     # Query with S1
-    results: list[dict[str, str]] = []
-    for _, row in s1_df[[name_col, country_col, "entity_id"]].iterrows():
-        raw_name = str(row[name_col]).strip()
-        country = str(row[country_col]).strip()
+    s1_names = s1_df[name_col].fillna("").astype(str).to_numpy()
+    s1_countries = s1_df[country_col].fillna("").astype(str).to_numpy() if country_col in s1_df.columns else [""] * len(s1_df)
+    s1_ids = s1_df["entity_id"].astype(str).to_numpy()
+
+    s1_res: list[str] = []
+    cand_res: list[str] = []
+    country_res: list[str] = []
+
+    for i in range(len(s1_ids)):
+        raw_name = s1_names[i].strip()
+        if not raw_name:
+            continue
         core = extract_core_name(raw_name)
         if not core:
             continue
-        key = (country, core) if country_aware else ("", core)
-        matched_cand_ids = cand_index.get(key, [])
-        for cand_id in matched_cand_ids:
-            results.append({
-                "s1_entity_id": row["entity_id"],
-                "candidate_entity_id": cand_id,
-                "candidate_source": cand_source,
-                "country": country,
-                "blocking_channel": CHANNEL_NAME,
-            })
+        country = s1_countries[i].strip() if country_aware else ""
+        matched = cand_index.get((country, core))
+        if matched:
+            for cid in matched:
+                s1_res.append(s1_ids[i])
+                cand_res.append(cid)
+                country_res.append(country)
 
-    res_df = pd.DataFrame(results)
-    if res_df.empty:
-        res_df = pd.DataFrame(columns=["s1_entity_id", "candidate_entity_id", "candidate_source", "country", "blocking_channel"])
-    else:
-        res_df = res_df.drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
+    if not s1_res:
+        return pd.DataFrame(columns=["s1_entity_id", "candidate_entity_id", "candidate_source", "country", "blocking_channel"])
+
+    res_df = pd.DataFrame({
+        "s1_entity_id": s1_res,
+        "candidate_entity_id": cand_res,
+        "candidate_source": cand_source,
+        "country": country_res,
+        "blocking_channel": CHANNEL_NAME,
+    }).drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
 
     logger.info("Channel [Core Name Block] generated %d candidate pairs for S1 -> %s", len(res_df), cand_source)
     return res_df

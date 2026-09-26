@@ -2,10 +2,7 @@
 src/blocking/house_street.py
 
 Channel 3: House Number + Street Token Blocking.
-Generates candidate pairs when:
-    - Same country (if country_aware)
-    - Same house number
-    - At least one meaningful street token overlaps
+Optimized with vector extraction and index maps.
 """
 from __future__ import annotations
 
@@ -20,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_NAME = "house_street"
 
-# Generic street type designators and unit keywords to ignore during token overlap
 _STREET_STOPWORDS = {
     "st", "street", "rd", "road", "ave", "avenue", "dr", "drive", "ln", "lane",
     "blvd", "boulevard", "ct", "court", "pl", "place", "pkwy", "parkway", "way",
@@ -33,13 +29,7 @@ _HOUSE_NUM_RE = re.compile(r"\b(\d+[a-zA-Z]?)\b")
 
 
 def extract_house_and_street(address_normalized: str, row_numbers_json: str = "") -> tuple[str, set[str]]:
-    """
-    Extract the primary house/building number and meaningful street tokens.
-
-    Examples:
-        "1795 westchester drive high point nc" -> ("1795", {"westchester", "high", "point", "nc"})
-        "2100 cameron drive unit apartment g"  -> ("2100", {"cameron"})
-    """
+    """Extract primary house number and meaningful street tokens."""
     if not address_normalized:
         return "", set()
 
@@ -48,8 +38,6 @@ def extract_house_and_street(address_normalized: str, row_numbers_json: str = ""
         return "", set()
 
     house_number = ""
-
-    # Check first token for number
     m = _HOUSE_NUM_RE.match(tokens[0])
     if m:
         house_number = m.group(1).lower()
@@ -61,7 +49,6 @@ def extract_house_and_street(address_normalized: str, row_numbers_json: str = ""
         except Exception:
             pass
 
-    # Extract meaningful street tokens (length >= 3 and not generic street stopwords)
     street_tokens = {
         tok.lower()
         for tok in tokens
@@ -77,19 +64,7 @@ def house_street_block(
     cand_source: str,
     country_aware: bool = True,
 ) -> pd.DataFrame:
-    """
-    Generate candidate pairs where S1 and candidate entity share the same house number
-    and have overlapping street tokens.
-
-    Args:
-        s1_df: DataFrame of S1 query records.
-        cand_df: DataFrame of candidate records (S2 or S3).
-        cand_source: Label ('S2' or 'S3').
-        country_aware: Whether to restrict matches to the same country.
-
-    Returns:
-        DataFrame of candidate pairs for the 'house_street' channel.
-    """
+    """Generate candidate pairs based on same house number + street token overlap."""
     logger.info("Running Channel [House + Street Block] for S1 -> %s...", cand_source)
 
     if s1_df.empty or cand_df.empty:
@@ -97,53 +72,64 @@ def house_street_block(
 
     country_col = "country_normalized"
     addr_col = "business_address_normalized"
-    num_col = "row_numbers" if "row_numbers" in cand_df.columns else ""
+    num_col = "row_numbers"
+
+    # Fast vector extraction
+    cand_addrs = cand_df[addr_col].fillna("").astype(str).to_numpy() if addr_col in cand_df.columns else [""] * len(cand_df)
+    cand_countries = cand_df[country_col].fillna("").astype(str).to_numpy() if country_col in cand_df.columns else [""] * len(cand_df)
+    cand_nums = cand_df[num_col].fillna("").astype(str).to_numpy() if num_col in cand_df.columns else [""] * len(cand_df)
+    cand_ids = cand_df["entity_id"].astype(str).to_numpy()
 
     # Build candidate index: (country, house_number) -> list of (entity_id, street_tokens)
     cand_index: dict[tuple[str, str], list[tuple[str, set[str]]]] = defaultdict(list)
-
-    for _, row in cand_df.iterrows():
-        addr = str(row.get(addr_col, "")).strip()
-        row_nums = str(row.get(num_col, "")) if num_col else ""
-        country = str(row.get(country_col, "")).strip()
+    for i in range(len(cand_ids)):
+        addr = cand_addrs[i].strip()
+        row_nums = cand_nums[i].strip()
+        country = cand_countries[i].strip() if country_aware else ""
 
         house_num, street_tokens = extract_house_and_street(addr, row_nums)
         if not house_num or not street_tokens:
             continue
 
-        key = (country, house_num) if country_aware else ("", house_num)
-        cand_index[key].append((row["entity_id"], street_tokens))
+        cand_index[(country, house_num)].append((cand_ids[i], street_tokens))
 
     # Query with S1
-    results: list[dict[str, str]] = []
-    for _, row in s1_df.iterrows():
-        addr = str(row.get(addr_col, "")).strip()
-        row_nums = str(row.get(num_col, "")) if num_col else ""
-        country = str(row.get(country_col, "")).strip()
+    s1_addrs = s1_df[addr_col].fillna("").astype(str).to_numpy() if addr_col in s1_df.columns else [""] * len(s1_df)
+    s1_countries = s1_df[country_col].fillna("").astype(str).to_numpy() if country_col in s1_df.columns else [""] * len(s1_df)
+    s1_nums = s1_df[num_col].fillna("").astype(str).to_numpy() if num_col in s1_df.columns else [""] * len(s1_df)
+    s1_ids = s1_df["entity_id"].astype(str).to_numpy()
+
+    s1_res: list[str] = []
+    cand_res: list[str] = []
+    country_res: list[str] = []
+
+    for i in range(len(s1_ids)):
+        addr = s1_addrs[i].strip()
+        row_nums = s1_nums[i].strip()
+        country = s1_countries[i].strip() if country_aware else ""
 
         house_num, s1_tokens = extract_house_and_street(addr, row_nums)
         if not house_num or not s1_tokens:
             continue
 
-        key = (country, house_num) if country_aware else ("", house_num)
-        candidates_with_same_house = cand_index.get(key, [])
+        candidates_with_same_house = cand_index.get((country, house_num))
+        if candidates_with_same_house:
+            for cand_id, cand_tokens in candidates_with_same_house:
+                if s1_tokens & cand_tokens:
+                    s1_res.append(s1_ids[i])
+                    cand_res.append(cand_id)
+                    country_res.append(country)
 
-        for cand_id, cand_tokens in candidates_with_same_house:
-            # Check for at least 1 overlapping street token
-            if s1_tokens & cand_tokens:
-                results.append({
-                    "s1_entity_id": row["entity_id"],
-                    "candidate_entity_id": cand_id,
-                    "candidate_source": cand_source,
-                    "country": country,
-                    "blocking_channel": CHANNEL_NAME,
-                })
+    if not s1_res:
+        return pd.DataFrame(columns=["s1_entity_id", "candidate_entity_id", "candidate_source", "country", "blocking_channel"])
 
-    res_df = pd.DataFrame(results)
-    if res_df.empty:
-        res_df = pd.DataFrame(columns=["s1_entity_id", "candidate_entity_id", "candidate_source", "country", "blocking_channel"])
-    else:
-        res_df = res_df.drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
+    res_df = pd.DataFrame({
+        "s1_entity_id": s1_res,
+        "candidate_entity_id": cand_res,
+        "candidate_source": cand_source,
+        "country": country_res,
+        "blocking_channel": CHANNEL_NAME,
+    }).drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
 
     logger.info("Channel [House + Street Block] generated %d candidate pairs for S1 -> %s", len(res_df), cand_source)
     return res_df
