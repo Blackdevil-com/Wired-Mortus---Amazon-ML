@@ -83,7 +83,7 @@ def house_street_block(
     cand_ids = cand_df["entity_id"].astype(str).to_numpy()
 
     logger.info("  Indexing %d candidate records for House + Street...", len(cand_ids))
-    cand_index: dict[tuple[str, str], list[tuple[str, set[str]]]] = defaultdict(list)
+    cand_index: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for i in range(len(cand_ids)):
         addr = cand_addrs[i].strip()
         row_nums = cand_nums[i].strip()
@@ -93,7 +93,9 @@ def house_street_block(
         if not house_num or not street_tokens:
             continue
 
-        cand_index[(country, house_num)].append((cand_ids[i], street_tokens))
+        cid = cand_ids[i]
+        for tok in street_tokens:
+            cand_index[(country, house_num, tok)].append(cid)
 
     # Query with S1
     s1_addrs = s1_df[addr_col].fillna("").astype(str).to_numpy() if addr_col in s1_df.columns else [""] * len(s1_df)
@@ -120,22 +122,24 @@ def house_street_block(
         if not house_num or not s1_tokens:
             continue
 
-        candidates_with_same_house = cand_index.get((country, house_num))
-        if candidates_with_same_house:
-            if max_block_size > 0 and len(candidates_with_same_house) > max_block_size:
-                candidates_to_check = candidates_with_same_house[:max_candidates_per_key]
-            else:
-                candidates_to_check = candidates_with_same_house
+        s1_id = s1_ids[i]
+        seen_for_query: set[str] = set()
 
-            matched_count = 0
-            for cand_id, cand_tokens in candidates_to_check:
-                if s1_tokens & cand_tokens:
-                    s1_res.append(s1_ids[i])
-                    cand_res.append(cand_id)
-                    country_res.append(country)
-                    matched_count += 1
-                    if max_candidates_per_key > 0 and matched_count >= max_candidates_per_key:
-                        break
+        for tok in s1_tokens:
+            matched = cand_index.get((country, house_num, tok))
+            if matched:
+                if max_block_size > 0 and len(matched) > max_block_size:
+                    matched = matched[:max_candidates_per_key]
+                for cid in matched:
+                    if cid not in seen_for_query:
+                        seen_for_query.add(cid)
+                        s1_res.append(s1_id)
+                        cand_res.append(cid)
+                        country_res.append(country)
+                        if max_candidates_per_key > 0 and len(seen_for_query) >= max_candidates_per_key:
+                            break
+            if max_candidates_per_key > 0 and len(seen_for_query) >= max_candidates_per_key:
+                break
 
     if not s1_res:
         return pd.DataFrame(columns=["s1_entity_id", "candidate_entity_id", "candidate_source", "country", "blocking_channel"])
