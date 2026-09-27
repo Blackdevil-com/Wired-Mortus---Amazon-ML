@@ -89,7 +89,7 @@ def exact_name_block(
         "candidate_source": cand_source,
         "country": country_res,
         "blocking_channel": CHANNEL_NAME,
-    }).drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
+    })
 
     logger.info("Channel [Exact Name Block] generated %d candidate pairs for S1 -> %s", len(res_df), cand_source)
     return res_df

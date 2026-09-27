@@ -58,13 +58,26 @@ def extract_house_and_street(address_normalized: str, row_numbers_json: str = ""
     return house_number, street_tokens
 
 
+_HS_CACHE: dict[tuple[str, str], tuple[str, set[str]]] = {}
+
+
+def get_house_and_street(address_normalized: str, row_numbers_json: str = "") -> tuple[str, set[str]]:
+    """Cached extraction of house and street tokens."""
+    key = (address_normalized, row_numbers_json)
+    if key in _HS_CACHE:
+        return _HS_CACHE[key]
+    res = extract_house_and_street(address_normalized, row_numbers_json)
+    _HS_CACHE[key] = res
+    return res
+
+
 def house_street_block(
     s1_df: pd.DataFrame,
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
-    max_candidates_per_key: int = 100,
-    max_block_size: int = 1000,
+    max_candidates_per_key: int = 10,
+    max_block_size: int = 200,
 ) -> pd.DataFrame:
     """Generate candidate pairs based on same house number + street token overlap."""
     logger.info("Running Channel [House + Street Block] for S1 -> %s...", cand_source)
@@ -89,7 +102,7 @@ def house_street_block(
         row_nums = cand_nums[i].strip()
         country = cand_countries[i].strip() if country_aware else ""
 
-        house_num, street_tokens = extract_house_and_street(addr, row_nums)
+        house_num, street_tokens = get_house_and_street(addr, row_nums)
         if not house_num or not street_tokens:
             continue
 
@@ -118,7 +131,7 @@ def house_street_block(
         row_nums = s1_nums[i].strip()
         country = s1_countries[i].strip() if country_aware else ""
 
-        house_num, s1_tokens = extract_house_and_street(addr, row_nums)
+        house_num, s1_tokens = get_house_and_street(addr, row_nums)
         if not house_num or not s1_tokens:
             continue
 
@@ -150,7 +163,7 @@ def house_street_block(
         "candidate_source": cand_source,
         "country": country_res,
         "blocking_channel": CHANNEL_NAME,
-    }).drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
+    })
 
     logger.info("Channel [House + Street Block] generated %d candidate pairs for S1 -> %s", len(res_df), cand_source)
     return res_df

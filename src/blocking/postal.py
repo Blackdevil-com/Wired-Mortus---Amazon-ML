@@ -49,13 +49,26 @@ def extract_postal_code(address_normalized: str, row_numbers_json: str = "") -> 
     return ""
 
 
+_POSTAL_CACHE: dict[tuple[str, str], str] = {}
+
+
+def get_postal_code(address_normalized: str, row_numbers_json: str = "") -> str:
+    """Cached extraction of postal code."""
+    key = (address_normalized, row_numbers_json)
+    if key in _POSTAL_CACHE:
+        return _POSTAL_CACHE[key]
+    res = extract_postal_code(address_normalized, row_numbers_json)
+    _POSTAL_CACHE[key] = res
+    return res
+
+
 def postal_block(
     s1_df: pd.DataFrame,
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
-    max_candidates_per_key: int = 100,
-    max_block_size: int = 1000,
+    max_candidates_per_key: int = 10,
+    max_block_size: int = 200,
 ) -> pd.DataFrame:
     """Generate candidate pairs based on same postal / zip code."""
     logger.info("Running Channel [Postal Block] for S1 -> %s...", cand_source)
@@ -81,7 +94,7 @@ def postal_block(
         row_nums = cand_nums[i].strip()
         country = cand_countries[i].strip() if country_aware else ""
 
-        postal = extract_postal_code(addr, row_nums)
+        postal = get_postal_code(addr, row_nums)
         if not postal:
             continue
 
@@ -108,7 +121,7 @@ def postal_block(
         row_nums = s1_nums[i].strip()
         country = s1_countries[i].strip() if country_aware else ""
 
-        postal = extract_postal_code(addr, row_nums)
+        postal = get_postal_code(addr, row_nums)
         if not postal:
             continue
 
@@ -119,8 +132,9 @@ def postal_block(
             elif max_candidates_per_key > 0 and len(matched) > max_candidates_per_key:
                 matched = matched[:max_candidates_per_key]
 
+            s1_id = s1_ids[i]
             for cid in matched:
-                s1_res.append(s1_ids[i])
+                s1_res.append(s1_id)
                 cand_res.append(cid)
                 country_res.append(country)
 
@@ -133,7 +147,7 @@ def postal_block(
         "candidate_source": cand_source,
         "country": country_res,
         "blocking_channel": CHANNEL_NAME,
-    }).drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
+    })
 
     logger.info("Channel [Postal Block] generated %d candidate pairs for S1 -> %s", len(res_df), cand_source)
     return res_df

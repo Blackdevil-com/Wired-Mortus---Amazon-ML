@@ -27,13 +27,21 @@ _LEGAL_SUFFIXES_RE = re.compile(
 )
 
 
+_CORE_CACHE: dict[str, str] = {}
+
+
 def extract_core_name(name_normalized: str) -> str:
     """Extract core business name by stripping common corporate suffixes."""
     if not name_normalized:
         return ""
+    if name_normalized in _CORE_CACHE:
+        return _CORE_CACHE[name_normalized]
+
     core = _LEGAL_SUFFIXES_RE.sub(" ", name_normalized)
     core = " ".join(core.split()).strip()
-    return core if len(core) >= 2 else name_normalized.strip()
+    res = core if len(core) >= 2 else name_normalized.strip()
+    _CORE_CACHE[name_normalized] = res
+    return res
 
 
 def core_name_block(
@@ -41,8 +49,8 @@ def core_name_block(
     cand_df: pd.DataFrame,
     cand_source: str,
     country_aware: bool = True,
-    max_candidates_per_key: int = 100,
-    max_block_size: int = 1000,
+    max_candidates_per_key: int = 10,
+    max_block_size: int = 200,
 ) -> pd.DataFrame:
     """Generate candidate pairs where S1 and candidate entity share the same core name."""
     logger.info("Running Channel [Core Name Block] for S1 -> %s...", cand_source)
@@ -100,8 +108,9 @@ def core_name_block(
             elif max_candidates_per_key > 0 and len(matched) > max_candidates_per_key:
                 matched = matched[:max_candidates_per_key]
 
+            s1_id = s1_ids[i]
             for cid in matched:
-                s1_res.append(s1_ids[i])
+                s1_res.append(s1_id)
                 cand_res.append(cid)
                 country_res.append(country)
 
@@ -114,7 +123,7 @@ def core_name_block(
         "candidate_source": cand_source,
         "country": country_res,
         "blocking_channel": CHANNEL_NAME,
-    }).drop_duplicates(subset=["s1_entity_id", "candidate_entity_id"]).reset_index(drop=True)
+    })
 
     logger.info("Channel [Core Name Block] generated %d candidate pairs for S1 -> %s", len(res_df), cand_source)
     return res_df
