@@ -8,13 +8,14 @@ saves the internal candidate union, and returns execution metrics.
 """
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from pathlib import Path
 
 import pandas as pd
 
-from .candidate_union import FINAL_COLUMNS, union_candidates
+from .candidate_union import FINAL_COLUMNS, CandidateUnionAccumulator, union_candidates
 from .config import BlockingConfig
 from .core_name import core_name_block
 from .embedding_blocking import embedding_block
@@ -34,7 +35,7 @@ def run_stage1_blocking(
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     """
     Execute all enabled Stage 1 blocking channels for S1 -> S2 and S1 -> S3,
-    and generate the deduplicated candidate union.
+    and generate the deduplicated candidate union using an incremental memory-bounded accumulator.
 
     Args:
         s1_df: Normalized S1 query entities DataFrame.
@@ -45,7 +46,7 @@ def run_stage1_blocking(
     Returns:
         (union_df, channel_dict)
             union_df: The final deduplicated candidate union DataFrame.
-            channel_dict: Dictionary mapping channel names to their generated candidate pairs.
+            channel_dict: Dictionary mapping channel names to their generated candidate pairs (empty if debug disabled).
     """
     if config is None:
         config = BlockingConfig()
@@ -57,8 +58,9 @@ def run_stage1_blocking(
     logger.info("S2 Candidate records: %d", len(s2_df))
     logger.info("S3 Candidate records: %d", len(s3_df))
     logger.info("Country-aware blocking: %s", config.country_aware)
+    logger.info("Max candidates per key: %d (Max block size: %d)", config.max_candidates_per_key, config.max_block_size)
 
-    channel_dfs: list[pd.DataFrame] = []
+    accumulator = CandidateUnionAccumulator()
     channel_dict: dict[str, pd.DataFrame] = {}
 
     t0 = time.perf_counter()
@@ -72,16 +74,26 @@ def run_stage1_blocking(
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
+        accumulator.add_dataframe(exact_s2)
+        count_s2 = len(exact_s2)
+        if config.save_debug_channels:
+            channel_dict["exact_name_s2"] = exact_s2
+        del exact_s2
+        gc.collect()
+
         exact_s3 = exact_name_block(
             s1_df, s3_df, "S3",
             country_aware=config.country_aware,
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
-        exact_all = pd.concat([exact_s2, exact_s3], ignore_index=True)
-        channel_dfs.append(exact_all)
-        channel_dict["exact_name"] = exact_all
-        logger.info("Exact Name candidates: %d", len(exact_all))
+        accumulator.add_dataframe(exact_s3)
+        count_s3 = len(exact_s3)
+        if config.save_debug_channels:
+            channel_dict["exact_name_s3"] = exact_s3
+        del exact_s3
+        gc.collect()
+        logger.info("Exact Name candidates total: %d (S2: %d, S3: %d)", count_s2 + count_s3, count_s2, count_s3)
 
     # ── 2. Core Name Blocking ───────────────────────────────────────────────
     if config.use_core_name_block:
@@ -92,16 +104,26 @@ def run_stage1_blocking(
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
+        accumulator.add_dataframe(core_s2)
+        count_s2 = len(core_s2)
+        if config.save_debug_channels:
+            channel_dict["core_name_s2"] = core_s2
+        del core_s2
+        gc.collect()
+
         core_s3 = core_name_block(
             s1_df, s3_df, "S3",
             country_aware=config.country_aware,
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
-        core_all = pd.concat([core_s2, core_s3], ignore_index=True)
-        channel_dfs.append(core_all)
-        channel_dict["core_name"] = core_all
-        logger.info("Core Name candidates: %d", len(core_all))
+        accumulator.add_dataframe(core_s3)
+        count_s3 = len(core_s3)
+        if config.save_debug_channels:
+            channel_dict["core_name_s3"] = core_s3
+        del core_s3
+        gc.collect()
+        logger.info("Core Name candidates total: %d (S2: %d, S3: %d)", count_s2 + count_s3, count_s2, count_s3)
 
     # ── 3. House + Street Blocking ──────────────────────────────────────────
     if config.use_house_street_block:
@@ -112,16 +134,26 @@ def run_stage1_blocking(
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
+        accumulator.add_dataframe(hs_s2)
+        count_s2 = len(hs_s2)
+        if config.save_debug_channels:
+            channel_dict["house_street_s2"] = hs_s2
+        del hs_s2
+        gc.collect()
+
         hs_s3 = house_street_block(
             s1_df, s3_df, "S3",
             country_aware=config.country_aware,
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
-        hs_all = pd.concat([hs_s2, hs_s3], ignore_index=True)
-        channel_dfs.append(hs_all)
-        channel_dict["house_street"] = hs_all
-        logger.info("House + Street candidates: %d", len(hs_all))
+        accumulator.add_dataframe(hs_s3)
+        count_s3 = len(hs_s3)
+        if config.save_debug_channels:
+            channel_dict["house_street_s3"] = hs_s3
+        del hs_s3
+        gc.collect()
+        logger.info("House + Street candidates total: %d (S2: %d, S3: %d)", count_s2 + count_s3, count_s2, count_s3)
 
     # ── 4. Postal Blocking ──────────────────────────────────────────────────
     if config.use_postal_block:
@@ -132,16 +164,26 @@ def run_stage1_blocking(
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
+        accumulator.add_dataframe(post_s2)
+        count_s2 = len(post_s2)
+        if config.save_debug_channels:
+            channel_dict["postal_s2"] = post_s2
+        del post_s2
+        gc.collect()
+
         post_s3 = postal_block(
             s1_df, s3_df, "S3",
             country_aware=config.country_aware,
             max_candidates_per_key=config.max_candidates_per_key,
             max_block_size=config.max_block_size,
         )
-        post_all = pd.concat([post_s2, post_s3], ignore_index=True)
-        channel_dfs.append(post_all)
-        channel_dict["postal"] = post_all
-        logger.info("Postal candidates: %d", len(post_all))
+        accumulator.add_dataframe(post_s3)
+        count_s3 = len(post_s3)
+        if config.save_debug_channels:
+            channel_dict["postal_s3"] = post_s3
+        del post_s3
+        gc.collect()
+        logger.info("Postal candidates total: %d (S2: %d, S3: %d)", count_s2 + count_s3, count_s2, count_s3)
 
     # ── 5. Character TF-IDF Retrieval ───────────────────────────────────────
     if config.use_tfidf_block:
@@ -153,6 +195,13 @@ def run_stage1_blocking(
             min_sim=config.tfidf_min_sim,
             country_aware=config.country_aware,
         )
+        accumulator.add_dataframe(tfidf_s2)
+        count_s2 = len(tfidf_s2)
+        if config.save_debug_channels:
+            channel_dict["tfidf_s2"] = tfidf_s2
+        del tfidf_s2
+        gc.collect()
+
         tfidf_s3 = tfidf_block(
             s1_df, s3_df, "S3",
             top_k=config.tfidf_top_k,
@@ -160,10 +209,13 @@ def run_stage1_blocking(
             min_sim=config.tfidf_min_sim,
             country_aware=config.country_aware,
         )
-        tfidf_all = pd.concat([tfidf_s2, tfidf_s3], ignore_index=True)
-        channel_dfs.append(tfidf_all)
-        channel_dict["tfidf"] = tfidf_all
-        logger.info("TF-IDF candidates: %d", len(tfidf_all))
+        accumulator.add_dataframe(tfidf_s3)
+        count_s3 = len(tfidf_s3)
+        if config.save_debug_channels:
+            channel_dict["tfidf_s3"] = tfidf_s3
+        del tfidf_s3
+        gc.collect()
+        logger.info("TF-IDF candidates total: %d (S2: %d, S3: %d)", count_s2 + count_s3, count_s2, count_s3)
 
     # ── 6. Multilingual Dense Embedding / FAISS ─────────────────────────────
     if config.use_embedding_block:
@@ -179,6 +231,13 @@ def run_stage1_blocking(
             cache_embeddings=config.cache_embeddings,
             country_aware=config.country_aware,
         )
+        accumulator.add_dataframe(emb_s2)
+        count_s2 = len(emb_s2)
+        if config.save_debug_channels:
+            channel_dict["embedding_s2"] = emb_s2
+        del emb_s2
+        gc.collect()
+
         emb_s3 = embedding_block(
             s1_df, s3_df, "S3",
             model_name=config.embedding_model,
@@ -190,15 +249,18 @@ def run_stage1_blocking(
             cache_embeddings=config.cache_embeddings,
             country_aware=config.country_aware,
         )
-        emb_all = pd.concat([emb_s2, emb_s3], ignore_index=True)
-        channel_dfs.append(emb_all)
-        channel_dict["embedding"] = emb_all
-        logger.info("Dense Embedding candidates: %d", len(emb_all))
+        accumulator.add_dataframe(emb_s3)
+        count_s3 = len(emb_s3)
+        if config.save_debug_channels:
+            channel_dict["embedding_s3"] = emb_s3
+        del emb_s3
+        gc.collect()
+        logger.info("Dense Embedding candidates total: %d (S2: %d, S3: %d)", count_s2 + count_s3, count_s2, count_s3)
 
-    # ── Candidate Union & Deduplication ─────────────────────────────────────
+    # ── Candidate Union Generation ──────────────────────────────────────────
     logger.info("-" * 60)
-    logger.info("Performing Candidate Union & Deduplication...")
-    union_df = union_candidates(channel_dfs)
+    logger.info("Finalizing Deduplicated Candidate Union...")
+    union_df = accumulator.to_dataframe()
 
     elapsed = time.perf_counter() - t0
     logger.info("Stage 1 Wide Blocking completed in %.2f seconds.", elapsed)

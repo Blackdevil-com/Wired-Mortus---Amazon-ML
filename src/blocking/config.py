@@ -24,8 +24,8 @@ class BlockingConfig:
     country_aware: bool = True
 
     # ── High-Frequency Block Explosion Protection ─────────────────────────────
-    max_candidates_per_key: int = 25   # Max candidates retrieved per query in coarse block channels
-    max_block_size: int = 500          # Skip/cap mega-blocks with >500 candidates (e.g. generic zip/name)
+    max_candidates_per_key: int = 10   # Max candidates retrieved per query in coarse block channels
+    max_block_size: int = 200          # Skip/cap mega-blocks with >200 candidates (e.g. generic zip/name)
 
     # ── TF-IDF Retrieval Settings ─────────────────────────────────────────────
     tfidf_ngram_range: tuple[int, int] = (3, 5)

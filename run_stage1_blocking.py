@@ -70,8 +70,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-top-k", type=int, default=20, help="Top-K candidates per S1 entity for FAISS/embeddings (default: 20).")
     parser.add_argument("--embedding-model", default="paraphrase-multilingual-MiniLM-L12-v2", help="SentenceTransformer model name.")
     parser.add_argument("--embedding-batch-size", type=int, default=512, help="Batch size for embedding generation (default: 512).")
-    parser.add_argument("--max-candidates-per-key", type=int, default=25, help="Max candidates retrieved per query in coarse block channels (default: 25).")
-    parser.add_argument("--max-block-size", type=int, default=500, help="Mega-block candidate count threshold (default: 500).")
+    parser.add_argument("--max-candidates-per-key", type=int, default=10, help="Max candidates retrieved per query in coarse block channels (default: 10).")
+    parser.add_argument("--max-block-size", type=int, default=200, help="Mega-block candidate count threshold (default: 200).")
 
     # Channel toggles
     parser.add_argument("--skip-exact", action="store_true", help="Skip Exact Name blocking channel.")

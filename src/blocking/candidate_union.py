@@ -30,31 +30,19 @@ FINAL_COLUMNS = [
 ]
 
 
-def union_candidates(channel_dfs: list[pd.DataFrame]) -> pd.DataFrame:
-    """
-    Union multiple candidate DataFrames and deduplicate on (s1_entity_id, candidate_entity_id).
+class CandidateUnionAccumulator:
+    """Memory-efficient incremental accumulator for candidate pairs across channels."""
 
-    Args:
-        channel_dfs: List of candidate DataFrames from each blocking channel.
+    def __init__(self) -> None:
+        # key: (s1_entity_id, candidate_entity_id) -> list:
+        # [0: source, 1: country, 2: channels_set, 3: tfidf_rank, 4: tfidf_sim, 5: emb_rank, 6: emb_sim]
+        self.merged: dict[tuple[str, str], list] = {}
 
-    Returns:
-        Deduplicated DataFrame adhering to the Stage 1 output schema.
-    """
-    logger.info("Aggregating and unioning candidates across %d channel outputs...", len(channel_dfs))
+    def add_dataframe(self, df: pd.DataFrame | None) -> None:
+        """Add candidate DataFrame to accumulator."""
+        if df is None or df.empty:
+            return
 
-    if not channel_dfs:
-        return pd.DataFrame(columns=FINAL_COLUMNS)
-
-    # Filter non-empty DataFrames
-    valid_dfs = [df for df in channel_dfs if df is not None and not df.empty]
-    if not valid_dfs:
-        return pd.DataFrame(columns=FINAL_COLUMNS)
-
-    # Dictionary to aggregate attributes by pair key
-    # key: (s1_entity_id, candidate_entity_id) -> data dict
-    merged: dict[tuple[str, str], dict] = {}
-
-    for df in valid_dfs:
         s1_arr = df["s1_entity_id"].astype(str).to_numpy()
         cand_arr = df["candidate_entity_id"].astype(str).to_numpy()
         src_arr = df["candidate_source"].astype(str).to_numpy() if "candidate_source" in df.columns else [""] * len(df)
@@ -77,64 +65,83 @@ def union_candidates(channel_dfs: list[pd.DataFrame]) -> pd.DataFrame:
             cand_id = cand_arr[i].strip()
             key = (s1_id, cand_id)
 
-            if key not in merged:
-                merged[key] = {
-                    "s1_entity_id": s1_id,
-                    "candidate_entity_id": cand_id,
-                    "candidate_source": src_arr[i].strip() if i < len(src_arr) else "",
-                    "country": country_arr[i].strip() if i < len(country_arr) else "",
-                    "channels_set": set(),
-                    "tfidf_rank": None,
-                    "tfidf_similarity": None,
-                    "embedding_rank": None,
-                    "embedding_similarity": None,
-                }
+            if key not in self.merged:
+                self.merged[key] = [
+                    src_arr[i].strip() if i < len(src_arr) else "",
+                    country_arr[i].strip() if i < len(country_arr) else "",
+                    set(),
+                    None,
+                    None,
+                    None,
+                    None,
+                ]
 
-            record = merged[key]
+            rec = self.merged[key]
             ch = ch_arr[i].strip() if i < len(ch_arr) else ""
             if ch:
-                record["channels_set"].add(ch)
+                rec[2].add(ch)
 
             if tfidf_rank_arr is not None:
                 val = tfidf_rank_arr[i]
                 if pd.notna(val) and val is not None:
-                    record["tfidf_rank"] = int(val)
+                    rec[3] = int(val)
             if tfidf_sim_arr is not None:
                 val = tfidf_sim_arr[i]
                 if pd.notna(val) and val is not None:
-                    record["tfidf_similarity"] = float(val)
+                    rec[4] = float(val)
             if emb_rank_arr is not None:
                 val = emb_rank_arr[i]
                 if pd.notna(val) and val is not None:
-                    record["embedding_rank"] = int(val)
+                    rec[5] = int(val)
             if emb_sim_arr is not None:
                 val = emb_sim_arr[i]
                 if pd.notna(val) and val is not None:
-                    record["embedding_similarity"] = float(val)
+                    rec[6] = float(val)
 
-    # Format into rows
-    logger.info("Formatting %d unique candidate pairs into output schema...", len(merged))
-    rows: list[dict] = []
-    for (s1_id, cand_id), record in merged.items():
-        channels_list = sorted(list(record["channels_set"]))
-        rows.append({
-            "s1_entity_id": s1_id,
-            "candidate_entity_id": cand_id,
-            "candidate_source": record["candidate_source"],
-            "country": record["country"],
-            "blocking_channels": json.dumps(channels_list, ensure_ascii=False),
-            "blocking_channel_count": len(channels_list),
-            "tfidf_rank": record["tfidf_rank"],
-            "tfidf_similarity": record["tfidf_similarity"],
-            "embedding_rank": record["embedding_rank"],
-            "embedding_similarity": record["embedding_similarity"],
-        })
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert accumulated pairs into final deduplicated DataFrame."""
+        if not self.merged:
+            return pd.DataFrame(columns=FINAL_COLUMNS)
 
-    union_df = pd.DataFrame(rows)
-    if union_df.empty:
-        return pd.DataFrame(columns=FINAL_COLUMNS)
+        logger.info("Formatting %d unique candidate pairs into output schema...", len(self.merged))
+        rows: list[dict] = []
+        for (s1_id, cand_id), rec in self.merged.items():
+            channels_list = sorted(list(rec[2]))
+            rows.append({
+                "s1_entity_id": s1_id,
+                "candidate_entity_id": cand_id,
+                "candidate_source": rec[0],
+                "country": rec[1],
+                "blocking_channels": json.dumps(channels_list, ensure_ascii=False),
+                "blocking_channel_count": len(channels_list),
+                "tfidf_rank": rec[3],
+                "tfidf_similarity": rec[4],
+                "embedding_rank": rec[5],
+                "embedding_similarity": rec[6],
+            })
 
-    # Sort deterministically
-    union_df = union_df.sort_values(by=["s1_entity_id", "candidate_source", "candidate_entity_id"]).reset_index(drop=True)
-    logger.info("Stage 1 Union produced %d unique candidate pairs.", len(union_df))
-    return union_df[FINAL_COLUMNS]
+        union_df = pd.DataFrame(rows)
+        if union_df.empty:
+            return pd.DataFrame(columns=FINAL_COLUMNS)
+
+        # Sort deterministically
+        union_df = union_df.sort_values(by=["s1_entity_id", "candidate_source", "candidate_entity_id"]).reset_index(drop=True)
+        logger.info("Stage 1 Union produced %d unique candidate pairs.", len(union_df))
+        return union_df[FINAL_COLUMNS]
+
+
+def union_candidates(channel_dfs: list[pd.DataFrame]) -> pd.DataFrame:
+    """
+    Union multiple candidate DataFrames and deduplicate on (s1_entity_id, candidate_entity_id).
+
+    Args:
+        channel_dfs: List of candidate DataFrames from each blocking channel.
+
+    Returns:
+        Deduplicated DataFrame adhering to the Stage 1 output schema.
+    """
+    logger.info("Aggregating and unioning candidates across %d channel outputs...", len(channel_dfs))
+    accumulator = CandidateUnionAccumulator()
+    for df in channel_dfs:
+        accumulator.add_dataframe(df)
+    return accumulator.to_dataframe()
